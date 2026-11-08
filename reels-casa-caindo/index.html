@@ -27,16 +27,25 @@ const easeOut = t => 1 - Math.pow(1 - t, 3);
 const smooth = u => u * u * (3 - 2 * u);
 let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647, (seed - 1) / 2147483646);
 
-/* ---------- montagem do feed (trechos do print) ---------- */
-const OY = 215;                                   // margem superior (interface do Reels)
-const SEG = [                                     // [y0, y1] no print -> empilhados na tela
-  { y0: 0, y1: 700 },                             // foto + ações + curtidas + legenda
-  { y0: 930, y1: 1031 },                          // cabeçalho do post de baixo (sem comentários)
-  { y0: 1240, y1: 1600 },                         // terreno: céu baixo, horizonte e gramado
-];
-let acc = OY; for (const s of SEG) { s.top = acc; acc += (s.y1 - s.y0) * K; s.bot = acc; }
-const TOP = { y0: OY, y1: OY + 506 * K };         // foto do post de cima
-const FIELD = SEG[2];
+/* ---------- montagem do feed (trechos do print, como um feed real) ---------- */
+const POST = {
+  user1: 'dek.devillekerr',
+  likes2: '7', reposts2: '23',
+  user2: 'terrenosdek', caption2: 'Seu terreno pronto pra receber a casa.',
+};
+const FONT = 'Inter, "DejaVu Sans", sans-serif';
+let acc = 0;
+const place = (y0, y1) => { const r = { y0, y1, top: acc, bot: acc + (y1 - y0) * K }; acc = r.bot; return r; };
+const HEAD1 = place(930, 1031);                   // cabeçalho do post de cima (estilo do print)
+const PA = place(0, 700);                         // foto + ações + curtidas + legenda
+const DATE1 = place(866, 914);                    // "22 de agosto" do post de cima
+const HEAD2 = place(930, 1031);                   // cabeçalho do post de baixo
+const FIELD = place(1130, 1600);                  // foto do terreno (1,91:1)
+const ACT2 = place(515, 600);                     // barra de ações do post de baixo
+const LIKES2 = place(600, 655);                   // "Curtido por ..."
+const CAP2_Y = acc + 26;                          // legenda do post de baixo
+const SEG = [HEAD1, PA, DATE1, HEAD2, FIELD, ACT2, LIKES2];
+const TOP = { y0: PA.top, y1: PA.top + 506 * K }; // foto do post de cima
 const fieldY = row => FIELD.top + (row - FIELD.y0) * K;   // linha do print -> tela
 
 const SRC = { feed: 'assets/feed.jpg', casa: 'assets/casa.png', fundo: 'assets/post_cima_sem_casa.png', perfis: 'assets/obj_perfis.png' };
@@ -50,14 +59,14 @@ const HW = (B.x1 - B.x0) * K, HH = (B.y1 - B.y0) * K;   // tamanho da casa na te
 /* ---------- física da casa ---------- */
 const T_SHAKE = 1.2, T_DROP = 2.1;
 const T_FALL = 0.95;                              // tempo de queda livre
-const LAND_S = 0.55;                              // escala ao assentar (mais distante, no terreno)
-const LAND_BASE = fieldY(1535);                   // linha do chão no gramado
+const LAND_S = 0.6;                              // escala ao assentar (mais distante, no terreno)
+const LAND_BASE = fieldY(1515);                   // linha do chão no gramado
 const LAND_CX = 540;
 const A_LAND = 0.11;                              // inclinação ao tocar o chão (canto direito primeiro)
 const T_LAND = T_DROP + T_FALL;                   // 1º toque (canto)
 const T_SLAM = T_LAND + 0.26;                     // a casa tomba e assenta inteira
 const DUR = T_SLAM + 3.0;
-const P0 = { x: B.x1 * K, y: OY + B.y1 * K };     // canto inferior direito, antes de cair
+const P0 = { x: B.x1 * K, y: TOP.y0 + B.y1 * K };     // canto inferior direito, antes de cair
 const P1 = { x: LAND_CX + HW * LAND_S / 2, y: LAND_BASE };
 const G = 2 * (P1.y - P0.y) / (T_FALL * T_FALL);  // gravidade que fecha a conta da queda
 
@@ -96,7 +105,7 @@ const BITS = [];
 seed = 321;
 for (let i = 0; i < 7; i++) {
   const t0 = T_SHAKE + 0.45 + i * 0.12 + rnd() * 0.1;
-  const sx = (B.x0 + 40 + rnd() * 260) * K, sy = OY + (330 + rnd() * 150) * K;   // lado da estrutura metálica
+  const sx = (B.x0 + 40 + rnd() * 260) * K, sy = TOP.y0 + (330 + rnd() * 150) * K;   // lado da estrutura metálica
   const lx = LAND_CX - HW * LAND_S / 2 - 30 + rnd() * (HW * LAND_S + 60);
   const ly = LAND_BASE - 4 + rnd() * 22;
   const T = 0.75 + rnd() * 0.3;
@@ -164,9 +173,35 @@ function drawDust(t) {
 }
 
 /* ---------- quadro ---------- */
+function heartOutline(x, y, sc) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.beginPath(); ctx.moveTo(0, 9);
+  ctx.bezierCurveTo(-4, 5, -15, -1, -15, -8); ctx.bezierCurveTo(-15, -14, -10, -17, -6.5, -17);
+  ctx.bezierCurveTo(-3, -17, -1, -15, 0, -12.5); ctx.bezierCurveTo(1, -15, 3, -17, 6.5, -17);
+  ctx.bezierCurveTo(10, -17, 15, -14, 15, -8); ctx.bezierCurveTo(15, -1, 4, 5, 0, 9); ctx.closePath();
+  ctx.restore(); ctx.lineWidth = 5.2; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0c1014'; ctx.stroke();
+}
 function drawFeed() {
   ctx.fillStyle = '#fff'; ctx.fillRect(-40, -40, W + 80, H + 80);
   for (const s of SEG) ctx.drawImage(IMG.feed, 0, s.y0, 900, s.y1 - s.y0, 0, s.top, W, s.bot - s.top);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  // cabeçalho do post de cima: troca o @
+  const hy = r => HEAD1.top + (r - HEAD1.y0) * K;
+  ctx.fillStyle = '#fff'; ctx.fillRect(105 * K, hy(962), 260 * K, 32 * K);
+  ctx.fillStyle = '#0c1014'; ctx.font = `600 ${27.5 * K}px ${FONT}`; ctx.fillText(POST.user1, 109 * K, hy(978));
+  // ações do post de baixo: coração vazio (o usuário é quem curte) e outros números
+  const ay = r => ACT2.top + (r - ACT2.y0) * K;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(18 * K, ay(528), 66 * K, 58 * K);
+  ctx.fillRect(163 * K, ay(538), 30 * K, 40 * K);
+  ctx.fillRect(268 * K, ay(538), 46 * K, 40 * K);
+  heartOutline(50 * K, ay(560), 1.75 * K);
+  ctx.fillStyle = '#0c1014'; ctx.font = `500 ${26 * K}px ${FONT}`;
+  ctx.fillText(POST.likes2, 167 * K, ay(558)); ctx.fillText(POST.reposts2, 271 * K, ay(558));
+  // legenda do post de baixo
+  ctx.font = `600 ${26 * K}px ${FONT}`; ctx.fillText(POST.user2, 26 * K, CAP2_Y);
+  const uw = ctx.measureText(POST.user2).width;
+  ctx.font = `400 ${26 * K}px ${FONT}`; ctx.fillText(POST.caption2, 26 * K + uw + 10, CAP2_Y);
 }
 function shakeAt(t, t0, amp) { const d = t - t0; if (d < 0) return [0, 0]; const e = Math.exp(-d * 8); return [Math.sin(d * 71) * amp * e, Math.cos(d * 53) * amp * 1.3 * e]; }
 function renderFrame(t) {
