@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Reels Steel Frame Real</title>
+<style>
+  html,body{margin:0;background:#000;height:100%}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{display:block;height:100vh;width:auto;max-width:100vw}
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+/* =====================================================================
+   Reels 9:16 — feed do Instagram (modo claro), duas postagens.
+   Post de cima: materiais de Steel Frame no canteiro.
+   Post de baixo: casa no terreno real; os materiais caem e montam o telhado.
+   ===================================================================== */
+const CONFIG = {
+  user1: 'obra.steelframe',          // perfil da postagem de cima
+  caption1: 'Material da cobertura chegou na obra',
+  likes1: '1.284', comments1: '87', shares1: '41', sends1: '156', time1: '2 h',
+  user2: 'obra.steelframe',          // perfil da postagem de baixo
+  place2: 'Araucária, Paraná',
+};
+const W = 1080, H = 1920, FONT = 'Inter, "DejaVu Sans", sans-serif';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+
+/* ---------- utilitários ---------- */
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const range = (t, a, b) => clamp((t - a) / (b - a));
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeIn = t => t * t;
+const easeInOut = t => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647, (seed - 1) / 2147483646);
+function poly(p) { ctx.beginPath(); p.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); }
+
+/* ---------- imagens ---------- */
+const SRC = {
+  mat: 'assets/materiais.png', matEmpty: 'assets/materiais_vazio.png',
+  s0: 'assets/casa_s0.png', s1: 'assets/casa_s1.png', s2: 'assets/casa_s2.png', s3: 'assets/casa_s3.png',
+  trelica: 'assets/obj_trelica.png', perfis: 'assets/obj_perfis.png', osb: 'assets/obj_osb.png', telhas: 'assets/obj_telhas.png',
+};
+const IMG = {};
+window.READY = Promise.all(Object.entries(SRC).map(([k, s]) => new Promise((ok, err) => {
+  const im = new Image(); im.onload = () => { IMG[k] = im; ok(); }; im.onerror = err; im.src = s;
+}))).then(() => document.fonts.ready).then(buildMasks);
+
+/* ---------- layout do feed (px na tela 1080x1920) ---------- */
+const P1_BOTTOM = 600;                 // fim da foto do post de cima
+const P1_TOP = P1_BOTTOM - W;          // foto quadrada 1080x1080 (topo fora da tela)
+const ACT1_Y = 662;                    // linha de ícones
+const P2_HEAD = 912;                   // centro do cabeçalho do post de baixo
+const P2_TOP = 975;                    // topo da foto do post de baixo
+const SC = W / 1024;                   // escala imagem -> tela
+const toScreen = (ix, iy) => [ix * SC, P2_TOP + iy * SC];
+
+/* faixa do telhado na foto da casa (coordenadas da imagem 1024) */
+const ROOF = { x0: 80, x1: 950, y0: 255, y1: 470 };
+
+/* ---------- peças que caem ---------- */
+const STAGES = [
+  { from: 's0', to: 's1', pieces: ['trelica', 'perfis', 'trelica', 'perfis'] },
+  { from: 's1', to: 's2', pieces: ['osb', 'osb', 'osb'] },
+  { from: 's2', to: 's3', pieces: ['telhas', 'telhas', 'telhas', 'telhas'] },
+];
+const FALL = 1.15, GAP = 0.5, START = 1.1, STAGE_GAP = 0.35;
+const items = [];
+let t = START;
+STAGES.forEach((st, si) => {
+  const n = st.pieces.length;
+  const order = n === 4 ? [1, 2, 0, 3] : [1, 0, 2];
+  st.pieces.forEach((kind, k) => {
+    const band = order[k];
+    const bx0 = lerp(ROOF.x0, ROOF.x1, band / n), bx1 = lerp(ROOF.x0, ROOF.x1, (band + 1) / n);
+    const [tx, ty] = toScreen((bx0 + bx1) / 2, (ROOF.y0 + ROOF.y1) / 2);
+    seed = 50 + si * 13 + k * 7;
+    items.push({ kind, stage: si, band, n, t0: t, dur: FALL, tx, ty,
+      w: (bx1 - bx0) * SC * (kind === 'trelica' ? 1.35 : kind === 'perfis' ? 1.3 : 1.1),
+      sx: 380 + rnd() * 320, sy: 380 + rnd() * 120, ex: 470 + rnd() * 140,
+      rot0: (rnd() - .5) * 0.6, spin: (rnd() - .5) * 1.4 });
+    t += GAP;
+  });
+  t += STAGE_GAP;
+});
+const stageEnd = si => Math.max(...items.filter(i => i.stage === si).map(i => i.t0 + i.dur));
+const T_DONE = stageEnd(2);
+const DUR = T_DONE + 3.2;
+
+/* máscaras suaves de cada faixa do telhado */
+const MASKS = {};
+function buildMasks() {
+  for (const n of [3, 4]) for (let b = 0; b < n; b++) {
+    const m = document.createElement('canvas'); m.width = 1024; m.height = 1024;
+    const g = m.getContext('2d'); g.filter = 'blur(14px)'; g.fillStyle = '#fff';
+    const x0 = lerp(ROOF.x0, ROOF.x1, b / n) - (b === 0 ? 60 : 4), x1 = lerp(ROOF.x0, ROOF.x1, (b + 1) / n) + (b === n - 1 ? 60 : 4);
+    g.fillRect(x0, ROOF.y0 - 40, x1 - x0, ROOF.y1 - ROOF.y0 + 70);
+    MASKS[n + '_' + b] = m;
+  }
+}
+const layer = document.createElement('canvas'); layer.width = 1024; layer.height = 1024;
+const lctx = layer.getContext('2d');
+
+/* ---------- posição da peça ---------- */
+function pose(it, t) {
+  const u = (t - it.t0) / it.dur;
+  if (u < 0 || u > 1.15) return null;
+  if (u < 0.2) {
+    const k = easeIn(u / 0.2);
+    return { x: lerp(it.sx, it.ex, k), y: lerp(it.sy, P1_BOTTOM + 10, k), a: it.rot0 + it.spin * .15 * k, s: lerp(.85, 1.05, k), al: 1, ph: 0 };
+  }
+  if (u < 1) {
+    const k = (u - 0.2) / 0.8;
+    return { x: lerp(it.ex, it.tx, easeInOut(k)), y: lerp(P1_BOTTOM + 10, it.ty, easeIn(k) * .8 + k * .2),
+      a: lerp(it.rot0 + it.spin * .15, 0, easeOut(k)) + Math.sin(k * Math.PI) * it.spin * .5,
+      s: lerp(1.05, 1.0, k) + Math.sin(k * Math.PI) * .7, al: 1, ph: 1 };
+  }
+  const k = (u - 1) / 0.15;                      // encaixa e "vira" telhado
+  return { x: it.tx, y: it.ty, a: 0, s: 1 - .12 * k, al: 1 - k, ph: 2 };
+}
+function drawPiece(it, p, alpha = 1) {
+  const im = IMG[it.kind]; const w = it.w * p.s, h = w * im.height / im.width;
+  ctx.save(); ctx.globalAlpha = alpha * p.al; ctx.translate(p.x, p.y); ctx.rotate(p.a);
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 10;
+  ctx.drawImage(im, -w / 2, -h / 2, w, h); ctx.restore();
+}
+
+/* ---------- foto da casa (estágios) ---------- */
+function drawHouse(t) {
+  // estágio base: o último já completo
+  let base = 's0';
+  STAGES.forEach((st, si) => { if (t >= stageEnd(si) + 0.35) base = st.to; });
+  // tremor sutil no impacto
+  let shake = 0;
+  for (const it of items) { const d = t - (it.t0 + it.dur); if (d >= 0 && d < .22) shake += Math.sin(d * 90) * (1 - d / .22) * 3; }
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, P2_TOP, W, W); ctx.clip();
+  ctx.translate(0, P2_TOP + shake);
+  ctx.drawImage(IMG[base], 0, 0, W, W);
+  // estágio em andamento: revela faixa a faixa
+  STAGES.forEach((st, si) => {
+    const end = stageEnd(si);
+    if (st.from !== base) return;
+    lctx.clearRect(0, 0, 1024, 1024);
+    let any = false;
+    for (const it of items.filter(i => i.stage === si)) {
+      const k = range(t, it.t0 + it.dur - .02, it.t0 + it.dur + .25);
+      if (k <= 0) continue; any = true;
+      lctx.globalAlpha = easeOut(k); lctx.drawImage(MASKS[it.n + '_' + it.band], 0, 0);
+    }
+    if (!any) return;
+    lctx.globalAlpha = 1; lctx.globalCompositeOperation = 'source-in';
+    lctx.drawImage(IMG[st.to], 0, 0, 1024, 1024);
+    lctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(layer, 0, 0, W, W);
+    // limpeza final do estágio: funde a imagem inteira
+    const f = range(t, end + 0.05, end + 0.35);
+    if (f > 0) { ctx.globalAlpha = f; ctx.drawImage(IMG[st.to], 0, 0, W, W); ctx.globalAlpha = 1; }
+  });
+  ctx.restore();
+}
+
+/* poeira no impacto */
+function drawDust(t) {
+  for (const it of items) {
+    const d = t - (it.t0 + it.dur); if (d < 0 || d > .7) continue;
+    const k = d / .7; seed = Math.floor(it.t0 * 997);
+    ctx.save();
+    for (let i = 0; i < 10; i++) {
+      const a = rnd() * Math.PI * 2, r = 20 + easeOut(k) * (50 + rnd() * 70);
+      ctx.globalAlpha = (1 - k) * .28;
+      ctx.fillStyle = it.kind === 'osb' ? '#d8c3a0' : '#cfcfcf';
+      ctx.filter = 'blur(6px)';
+      ctx.beginPath(); ctx.arc(it.tx + Math.cos(a) * r, it.ty + Math.sin(a) * r * .5, 10 + 22 * k, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+/* ---------- interface (Instagram, modo claro) ---------- */
+function iconHeart(x, y, s, fill) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.beginPath(); ctx.moveTo(0, 9);
+  ctx.bezierCurveTo(-4, 5, -15, -1, -15, -8); ctx.bezierCurveTo(-15, -14, -10, -17, -6.5, -17);
+  ctx.bezierCurveTo(-3, -17, -1, -15, 0, -12.5); ctx.bezierCurveTo(1, -15, 3, -17, 6.5, -17);
+  ctx.bezierCurveTo(10, -17, 15, -14, 15, -8); ctx.bezierCurveTo(15, -1, 4, 5, 0, 9); ctx.closePath();
+  ctx.restore();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); } else { ctx.lineWidth = 5; ctx.strokeStyle = '#0c1014'; ctx.stroke(); }
+}
+function iconComment(x, y) {
+  ctx.beginPath(); ctx.arc(x, y, 25, Math.PI * 0.72, Math.PI * 2.62);
+  ctx.lineTo(x - 22, y + 27); ctx.closePath();
+  ctx.lineWidth = 5; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0c1014'; ctx.stroke();
+}
+function iconRepost(x, y) {
+  ctx.lineWidth = 5; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.strokeStyle = '#0c1014';
+  ctx.beginPath(); ctx.moveTo(x - 20, y + 6); ctx.lineTo(x - 20, y - 8); ctx.quadraticCurveTo(x - 20, y - 14, x - 14, y - 14); ctx.lineTo(x + 17, y - 14); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 9, y - 22); ctx.lineTo(x + 18, y - 14); ctx.lineTo(x + 9, y - 6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 20, y - 6); ctx.lineTo(x + 20, y + 8); ctx.quadraticCurveTo(x + 20, y + 14, x + 14, y + 14); ctx.lineTo(x - 17, y + 14); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 9, y + 6); ctx.lineTo(x - 18, y + 14); ctx.lineTo(x - 9, y + 22); ctx.stroke();
+}
+function iconSend(x, y) {
+  ctx.lineWidth = 5; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0c1014';
+  poly([[x - 26, y - 21], [x + 26, y - 21], [x - 2, y + 27], [x - 8, y - 4]]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 8, y - 4); ctx.lineTo(x + 25, y - 20); ctx.stroke();
+}
+function iconSave(x, y) {
+  ctx.lineWidth = 5; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0c1014';
+  poly([[x - 19, y - 25], [x + 19, y - 25], [x + 19, y + 26], [x, y + 9], [x - 19, y + 26]]); ctx.stroke();
+}
+function avatar(x, y, r) {
+  ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.clip();
+  const im = IMG.s3; ctx.drawImage(im, 120, 200, 760, 760, x - r, y - r, 2 * r, 2 * r);
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(x, y, r + .5, 0, 7); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,0,0,.12)'; ctx.stroke();
+}
+function drawUI() {
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  // ícones + contadores do post de cima
+  const y = ACT1_Y;
+  iconHeart(64, y + 2, 1.62); ctx.fillStyle = '#0c1014'; ctx.font = `600 34px ${FONT}`;
+  ctx.fillText(CONFIG.likes1, 100, y + 2);
+  let x = 100 + ctx.measureText(CONFIG.likes1).width + 50;
+  iconComment(x, y); ctx.fillText(CONFIG.comments1, x + 38, y + 2);
+  x += 38 + ctx.measureText(CONFIG.comments1).width + 52;
+  iconRepost(x, y); ctx.fillText(CONFIG.shares1, x + 38, y + 2);
+  x += 38 + ctx.measureText(CONFIG.shares1).width + 52;
+  iconSend(x, y); ctx.fillText(CONFIG.sends1, x + 40, y + 2);
+  iconSave(1018, y);
+  // legenda
+  ctx.font = `700 34px ${FONT}`; ctx.fillText(CONFIG.user1, 36, 740);
+  const uw = ctx.measureText(CONFIG.user1).width;
+  ctx.font = `400 34px ${FONT}`; ctx.fillText(CONFIG.caption1, 36 + uw + 12, 740);
+  ctx.fillStyle = '#737373'; ctx.font = `400 30px ${FONT}`;
+  ctx.fillText(CONFIG.time1, 36, 792);
+  // cabeçalho do post de baixo
+  ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0, 836, W, 1);
+  avatar(76, P2_HEAD, 40);
+  ctx.fillStyle = '#0c1014'; ctx.font = `700 33px ${FONT}`; ctx.fillText(CONFIG.user2, 136, P2_HEAD - 18);
+  ctx.font = `400 29px ${FONT}`; ctx.fillText(CONFIG.place2, 136, P2_HEAD + 22);
+  ctx.fillStyle = '#0c1014'; for (const dx of [-16, 0, 16]) { ctx.beginPath(); ctx.arc(1030 + dx, P2_HEAD, 4.5, 0, 7); ctx.fill(); }
+}
+
+/* ---------- quadro ---------- */
+function renderFrame(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  // rolagem inicial do feed (como se o usuário tivesse acabado de rolar)
+  const scroll = (1 - easeOut(range(t, 0, 0.9))) * 340;
+  ctx.save(); ctx.translate(0, scroll);
+
+  // post de cima: pilha some depois que tudo caiu
+  ctx.drawImage(IMG.mat, 0, P1_TOP, W, W);
+  const gone = range(t, T_DONE - 0.6, T_DONE + 0.2);
+  if (gone > 0) { ctx.globalAlpha = gone; ctx.drawImage(IMG.matEmpty, 0, P1_TOP, W, W); ctx.globalAlpha = 1; }
+  drawUI();
+  drawHouse(t);
+  drawDust(t);
+
+  // peças em queda por cima de tudo
+  for (const it of items) {
+    const p = pose(it, t); if (!p) continue;
+    if (p.ph === 1) for (let k = 3; k >= 1; k--) {
+      const q = pose(it, t - k * .022); if (q && q.ph === 1) drawPiece(it, q, .13);
+    }
+    if (p.ph === 0) { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, P1_BOTTOM + 60); ctx.clip(); drawPiece(it, p); ctx.restore(); }
+    else drawPiece(it, p);
+  }
+
+  // curtida com toque duplo no post de baixo
+  const hk = range(t, T_DONE + 0.7, T_DONE + 1.9);
+  if (hk > 0 && hk < 1) {
+    const s = hk < .25 ? (easeOut(hk / .25) * 1.15) : hk < .35 ? lerp(1.15, 1, (hk - .25) / .1) : 1;
+    ctx.save(); ctx.globalAlpha = 1 - range(hk, .72, 1);
+    ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 30;
+    iconHeart(540, P2_TOP + 520, 7.5 * s, '#ffffff');
+    ctx.restore();
+  }
+  ctx.restore();
+}
+window.renderFrame = renderFrame;
+window.DUR = DUR; window.ITEMS = items;
+
+if (!/render=1/.test(location.search)) {
+  window.READY.then(() => {
+    const st = performance.now();
+    const loop = now => { renderFrame(((now - st) / 1000) % (DUR + .5)); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  });
+}
+</script>
+</body>
+</html>
