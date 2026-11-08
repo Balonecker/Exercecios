@@ -14,7 +14,9 @@
 <script>
 /* =====================================================================
    Reels 9:16 — a casa do post de cima se solta e cai no terreno do
-   post de baixo. Base: print real do feed (900x1600, escala 1.2).
+   post de baixo. Base: print real do feed (900x1600), enquadrado na
+   área segura do Reels (topo ~215 px e base ~380 px livres para a
+   interface do Instagram).
    ===================================================================== */
 const W = 1080, H = 1920, K = 1.2;
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
@@ -22,184 +24,177 @@ const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
 const range = (t, a, b) => clamp((t - a) / (b - a));
 const easeOut = t => 1 - Math.pow(1 - t, 3);
+const smooth = u => u * u * (3 - 2 * u);
 let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647, (seed - 1) / 2147483646);
 
-/* regiões do print (já em px da tela 1080x1920) */
-const TOP = { y0: 0, y1: 506 * K };          // foto do post de cima
-const BOT = { y0: 1031 * K, y1: H };         // foto do post de baixo
+/* ---------- montagem do feed (trechos do print) ---------- */
+const OY = 215;                                   // margem superior (interface do Reels)
+const SEG = [                                     // [y0, y1] no print -> empilhados na tela
+  { y0: 0, y1: 700 },                             // foto + ações + curtidas + legenda
+  { y0: 930, y1: 1031 },                          // cabeçalho do post de baixo (sem comentários)
+  { y0: 1240, y1: 1600 },                         // terreno: céu baixo, horizonte e gramado
+];
+let acc = OY; for (const s of SEG) { s.top = acc; acc += (s.y1 - s.y0) * K; s.bot = acc; }
+const TOP = { y0: OY, y1: OY + 506 * K };         // foto do post de cima
+const FIELD = SEG[2];
+const fieldY = row => FIELD.top + (row - FIELD.y0) * K;   // linha do print -> tela
 
-const SRC = { feed: 'assets/feed.jpg', casa: 'assets/casa.png', fundo: 'assets/post_cima_sem_casa.png' };
+const SRC = { feed: 'assets/feed.jpg', casa: 'assets/casa.png', fundo: 'assets/post_cima_sem_casa.png', perfis: 'assets/obj_perfis.png' };
 const IMG = {};
 window.READY = Promise.all(Object.entries(SRC).map(([k, s]) => new Promise((ok, err) => {
   const im = new Image(); im.onload = () => { IMG[k] = im; ok(); }; im.onerror = err; im.src = s;
 })));
-window.BBOX = { x0: 192, y0: 8, x1: 900, y1: 494 };   // caixa da casa recortada (imagem 900x506)
+const B = { x0: 192, y0: 8, x1: 900, y1: 494 };   // caixa da casa recortada (imagem 900x506)
+const HW = (B.x1 - B.x0) * K, HH = (B.y1 - B.y0) * K;   // tamanho da casa na tela (escala 1)
 
-/* ---------- linha do tempo ---------- */
-const T_SHAKE = 1.2;      // começa a tremer
-const T_DROP = 2.05;      // solta
-const G = 5200;           // gravidade px/s²
-const LAND_SCALE = 0.86;  // escala ao assentar no terreno (perspectiva)
-const LAND_BASE = 1878;   // linha do chão (base da casa) na foto de baixo
-const LAND_CX = 545;      // centro horizontal no terreno
-let T_FALL, T_LAND, DUR;
-function setup() {
-  const b = window.BBOX;                     // {x0,y0,x1,y1} na imagem 900x506
-  const base0 = b.y1 * K;                    // base da casa na tela, antes de cair
-  const dist = LAND_BASE - base0;
-  T_FALL = Math.sqrt(2 * dist / G);
-  T_LAND = T_DROP + T_FALL;
-  DUR = T_LAND + 3.6;
-  window.DUR = DUR; window.T_LAND = T_LAND;
-}
+/* ---------- física da casa ---------- */
+const T_SHAKE = 1.2, T_DROP = 2.1;
+const T_FALL = 0.95;                              // tempo de queda livre
+const LAND_S = 0.55;                              // escala ao assentar (mais distante, no terreno)
+const LAND_BASE = fieldY(1535);                   // linha do chão no gramado
+const LAND_CX = 540;
+const A_LAND = 0.11;                              // inclinação ao tocar o chão (canto direito primeiro)
+const T_LAND = T_DROP + T_FALL;                   // 1º toque (canto)
+const T_SLAM = T_LAND + 0.26;                     // a casa tomba e assenta inteira
+const DUR = T_SLAM + 3.0;
+const P0 = { x: B.x1 * K, y: OY + B.y1 * K };     // canto inferior direito, antes de cair
+const P1 = { x: LAND_CX + HW * LAND_S / 2, y: LAND_BASE };
+const G = 2 * (P1.y - P0.y) / (T_FALL * T_FALL);  // gravidade que fecha a conta da queda
 
-/* estado da casa: posição da base (x central, y da base), escala, rotação */
+/* a casa é desenhada a partir do canto inferior direito (pivô) */
 function house(t) {
-  const b = window.BBOX;
-  const cx0 = (b.x0 + b.x1) / 2 * K, base0 = b.y1 * K;
-  if (t < T_DROP) {
-    const k = range(t, T_SHAKE, T_DROP);
-    const amp = k * k;
-    return { cx: cx0 + Math.sin(t * 61) * 3.5 * amp, by: base0 + Math.abs(Math.sin(t * 47)) * 2.5 * amp,
-      s: 1, sy: 1, a: Math.sin(t * 37) * 0.008 * amp, phase: 0 };
+  if (t < T_DROP) {                               // tremendo, ainda presa ao post
+    const k = range(t, T_SHAKE, T_DROP), amp = k * k;
+    return { x: P0.x + Math.sin(t * 59) * 3 * amp, y: P0.y + Math.abs(Math.sin(t * 43)) * 2 * amp,
+      a: Math.sin(t * 31) * 0.006 * amp + 0.02 * smooth(range(t, T_DROP - 0.25, T_DROP)), s: 1, ph: 0 };
   }
-  if (t < T_LAND) {
+  if (t < T_LAND) {                               // queda livre girando devagar
     const f = t - T_DROP, u = f / T_FALL;
-    return { cx: lerp(cx0, LAND_CX, u * u * (3 - 2 * u)), by: base0 + 0.5 * G * f * f,
-      s: lerp(1, LAND_SCALE, u), sy: 1 + 0.025 * u,          // leve alongamento pela velocidade
-      a: -0.07 * Math.sin(u * Math.PI) * (1 - u * .3), phase: 1 };
+    return { x: lerp(P0.x, P1.x, smooth(u)), y: P0.y + 0.5 * G * f * f,
+      a: lerp(0.02, A_LAND, u), s: lerp(1, LAND_S, Math.pow(u, 0.8)), ph: 1 };
   }
-  const d = t - T_LAND;                                     // impacto: amassa e volta
-  const sq = Math.exp(-d * 9) * Math.cos(d * 38);
-  return { cx: LAND_CX, by: LAND_BASE, s: LAND_SCALE, sy: 1 - 0.06 * sq, sx: 1 + 0.03 * sq, a: 0, phase: 2, d };
+  const d = t - T_LAND;
+  if (t < T_SLAM) {                               // tomba sobre o canto até ficar plana
+    const u = d / (T_SLAM - T_LAND);
+    return { x: P1.x, y: P1.y, a: A_LAND * (1 - u * u), s: LAND_S, ph: 2 };
+  }
+  const e = t - T_SLAM;                           // pequeno quique e assenta
+  const bounce = e < 0.22 ? Math.sin(Math.PI * e / 0.22) * 0.014 : 0;
+  const sq = Math.exp(-e * 10) * Math.cos(e * 40);
+  return { x: P1.x, y: P1.y, a: bounce, s: LAND_S, sy: 1 - 0.035 * sq, ph: 3 };
 }
-
 function drawHouse(h, alpha = 1) {
-  const b = window.BBOX, im = IMG.casa;
-  const bw = (b.x1 - b.x0) * K, bh = (b.y1 - b.y0) * K;
   ctx.save(); ctx.globalAlpha = alpha;
-  ctx.translate(h.cx, h.by); ctx.rotate(h.a);
-  ctx.scale(h.s * (h.sx || 1), h.s * h.sy);
-  ctx.drawImage(im, b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0, -bw / 2, -bh, bw, bh);
+  ctx.translate(h.x, h.y); ctx.rotate(-h.a);      // positivo = lado esquerdo levantado
+  ctx.scale(h.s, h.s * (h.sy || 1));
+  ctx.drawImage(IMG.casa, B.x0, B.y0, B.x1 - B.x0, B.y1 - B.y0, -HW, -HH, HW, HH);
   ctx.restore();
 }
 
-/* sombra de contato no gramado (cresce conforme a casa se aproxima) */
-function drawShadow(h, t) {
-  const b = window.BBOX;
+/* ---------- peças soltas (perfis) que se desprendem da estrutura ---------- */
+const BITS = [];
+seed = 321;
+for (let i = 0; i < 7; i++) {
+  const t0 = T_SHAKE + 0.45 + i * 0.12 + rnd() * 0.1;
+  const sx = (B.x0 + 40 + rnd() * 260) * K, sy = OY + (330 + rnd() * 150) * K;   // lado da estrutura metálica
+  const lx = LAND_CX - HW * LAND_S / 2 - 30 + rnd() * (HW * LAND_S + 60);
+  const ly = LAND_BASE - 4 + rnd() * 22;
+  const T = 0.75 + rnd() * 0.3;
+  BITS.push({ t0, sx, sy, lx, ly, T, g: 2 * (ly - sy) / (T * T), w: 46 + rnd() * 40,
+    a0: (rnd() - .5) * 0.6, spin: (rnd() - .5) * 9, aEnd: (rnd() - .5) * 0.35, flip: rnd() < .5 });
+}
+function drawBits(t) {
+  for (const b of BITS) {
+    const f = t - b.t0; if (f < 0) continue;
+    let x, y, a, s;
+    if (f < b.T) { const u = f / b.T; x = lerp(b.sx, b.lx, u); y = b.sy + 0.5 * b.g * f * f; a = b.a0 + b.spin * f; s = lerp(1, LAND_S + .1, u); }
+    else {                                          // quica e deita no gramado
+      const e = f - b.T, hop = e < 0.25 ? Math.sin(Math.PI * e / 0.25) * 14 : 0;
+      x = b.lx + Math.min(e, .25) * 40; y = b.ly - hop; a = lerp(b.a0 + b.spin * b.T, b.aEnd, clamp(e / 0.25)); s = LAND_S + .1;
+    }
+    const im = IMG.perfis, w = b.w * s, hh = w * im.height / im.width;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(a); if (b.flip) ctx.scale(-1, 1);
+    ctx.shadowColor = 'rgba(0,0,0,.3)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
+    ctx.drawImage(im, -w / 2, -hh / 2, w, hh); ctx.restore();
+  }
+}
+
+/* ---------- sombra, grama e poeira ---------- */
+function clipField() { ctx.beginPath(); ctx.rect(0, FIELD.top, W, FIELD.bot - FIELD.top); ctx.clip(); }
+function drawShadow(t) {
   const prox = t < T_DROP ? 0 : t < T_LAND ? Math.pow(range(t, T_DROP, T_LAND), 3) : 1;
   if (prox <= 0) return;
-  const w = (b.x1 - b.x0) * K * LAND_SCALE;
-  ctx.save(); ctx.beginPath(); ctx.rect(0, BOT.y0, W, H - BOT.y0); ctx.clip();
-  ctx.filter = 'blur(14px)'; ctx.globalAlpha = 0.55 * prox;
-  ctx.fillStyle = '#1d2a12';
-  ctx.beginPath(); ctx.ellipse(LAND_CX + 20, LAND_BASE + 4, w * 0.52 * lerp(1.4, 1, prox), 26, 0, 0, 7); ctx.fill();
+  const w = HW * LAND_S;
+  ctx.save(); clipField(); ctx.filter = 'blur(12px)'; ctx.globalAlpha = 0.5 * prox; ctx.fillStyle = '#1d2a12';
+  ctx.beginPath(); ctx.ellipse(LAND_CX + 14, LAND_BASE + 3, w * 0.53 * lerp(1.5, 1, prox), 15, 0, 0, 7); ctx.fill();
   ctx.restore();
 }
-
-/* grama da foto passando por cima da base da casa (assenta no terreno) */
-const grassLayer = document.createElement('canvas'); grassLayer.width = W; grassLayer.height = 90;
-const gctx = grassLayer.getContext('2d');
+const grass = document.createElement('canvas'); grass.width = W; grass.height = 70;
+const gctx = grass.getContext('2d');
 function drawGrassOverlap(t) {
-  if (t < T_LAND - 0.01) return;
-  const k = range(t, T_LAND - 0.01, T_LAND + 0.25);
-  const y0 = LAND_BASE - 58;
-  gctx.clearRect(0, 0, W, 90);
-  gctx.globalCompositeOperation = 'source-over';
-  gctx.drawImage(IMG.feed, 0, y0 / K, 900, 90 / K, 0, 0, W, 90);
-  gctx.globalCompositeOperation = 'destination-in';
-  const g = gctx.createLinearGradient(0, 0, 0, 90);
-  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.45, 'rgba(0,0,0,.6)'); g.addColorStop(0.65, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,1)');
-  gctx.fillStyle = g; gctx.fillRect(0, 0, W, 90);
-  gctx.globalCompositeOperation = 'source-over';
-  ctx.save(); ctx.globalAlpha = k; ctx.drawImage(grassLayer, 0, y0); ctx.restore();
-}
-
-/* poeira e detritos do impacto */
-const DUST = [], DEBRIS = [];
-seed = 99;
-for (let i = 0; i < 160; i++) DUST.push({ x: (rnd() - .5) * 2.2, v: 0.4 + rnd() * 1.2, up: rnd(), r: 10 + rnd() * 26, life: 1.0 + rnd() * 1.6, c: rnd() });
-for (let i = 0; i < 40; i++) DEBRIS.push({ x: (rnd() - .5) * 1.6, vx: (rnd() - .5) * 900, vy: -300 - rnd() * 700, r: 2 + rnd() * 5, c: rnd() });
-function drawImpact(t) {
   if (t < T_LAND) return;
-  const d = t - T_LAND, b = window.BBOX, half = (b.x1 - b.x0) * K * LAND_SCALE / 2;
-  ctx.save(); ctx.beginPath(); ctx.rect(0, BOT.y0, W, H - BOT.y0); ctx.clip();
+  const y0 = LAND_BASE - 34;
+  const srcRow = FIELD.y0 + (y0 - FIELD.top) / K;
+  gctx.globalCompositeOperation = 'source-over'; gctx.clearRect(0, 0, W, 70);
+  gctx.drawImage(IMG.feed, 0, srcRow, 900, 70 / K, 0, 0, W, 70);
+  gctx.globalCompositeOperation = 'destination-in';
+  const g = gctx.createLinearGradient(0, 0, 0, 70);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.4, 'rgba(0,0,0,.55)'); g.addColorStop(0.6, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+  gctx.fillStyle = g; gctx.fillRect(0, 0, W, 70); gctx.globalCompositeOperation = 'source-over';
+  ctx.save(); clipField(); ctx.globalAlpha = range(t, T_LAND, T_SLAM + 0.1); ctx.drawImage(grass, 0, y0); ctx.restore();
+}
+const DUST = [];
+seed = 99;
+for (let i = 0; i < 170; i++) DUST.push({ x: (rnd() - .5) * 2.3, v: 0.4 + rnd() * 1.2, up: rnd(), r: 7 + rnd() * 18, life: 1.0 + rnd() * 1.6, c: rnd(), at: rnd() < .3 ? 0 : 1 });
+function drawDust(t) {
+  const half = HW * LAND_S / 2;
+  ctx.save(); clipField(); ctx.filter = 'blur(12px)';
   for (const p of DUST) {
+    const t0 = p.at ? T_SLAM : T_LAND; const d = t - t0; if (d < 0) continue;
     const k = d / p.life; if (k > 1) continue;
     const spread = easeOut(Math.min(1, d * p.v * 1.4));
-    const x = LAND_CX + p.x * half * (0.75 + spread * 0.9);
-    const y = LAND_BASE - 6 - p.up * 90 * easeOut(Math.min(1, d * 1.3)) * p.v;
-    ctx.globalAlpha = 0.16 * (1 - k) * (1 - k);
-    ctx.fillStyle = p.c < .5 ? '#c9c6b8' : '#e9e8e0';
-    ctx.filter = 'blur(16px)';
+    const cx = p.at ? LAND_CX : P1.x - 20;
+    const x = cx + p.x * half * (p.at ? 0.8 + spread * 0.8 : 0.3 + spread * 0.5);
+    const y = LAND_BASE - 4 - p.up * 60 * easeOut(Math.min(1, d * 1.3)) * p.v;
+    ctx.globalAlpha = 0.17 * (1 - k) * (1 - k);
+    ctx.fillStyle = p.c < .5 ? '#c9c6b8' : '#ecebe3';
     ctx.beginPath(); ctx.arc(x, y, p.r * (0.6 + spread * 1.4), 0, 7); ctx.fill();
   }
-  ctx.filter = 'none';
-  for (const p of DEBRIS) {
-    if (d > 1.1) break;
-    const x = LAND_CX + p.x * half + p.vx * d, y = LAND_BASE - 10 + p.vy * d + 0.5 * 2600 * d * d;
-    if (y > LAND_BASE + 20) continue;
-    ctx.globalAlpha = 1 - d / 1.1;
-    ctx.fillStyle = p.c < .5 ? '#5b5a4f' : '#7d7464';
-    ctx.fillRect(x, y, p.r, p.r * .8);
-  }
   ctx.restore();
-}
-
-/* curtida com toque duplo no post de baixo */
-function heart(x, y, s, fill) {
-  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-  ctx.beginPath(); ctx.moveTo(0, 9);
-  ctx.bezierCurveTo(-4, 5, -15, -1, -15, -8); ctx.bezierCurveTo(-15, -14, -10, -17, -6.5, -17);
-  ctx.bezierCurveTo(-3, -17, -1, -15, 0, -12.5); ctx.bezierCurveTo(1, -15, 3, -17, 6.5, -17);
-  ctx.bezierCurveTo(10, -17, 15, -14, 15, -8); ctx.bezierCurveTo(15, -1, 4, 5, 0, 9); ctx.closePath();
-  ctx.restore(); ctx.fillStyle = fill; ctx.fill();
 }
 
 /* ---------- quadro ---------- */
+function drawFeed() {
+  ctx.fillStyle = '#fff'; ctx.fillRect(-40, -40, W + 80, H + 80);
+  for (const s of SEG) ctx.drawImage(IMG.feed, 0, s.y0, 900, s.y1 - s.y0, 0, s.top, W, s.bot - s.top);
+}
+function shakeAt(t, t0, amp) { const d = t - t0; if (d < 0) return [0, 0]; const e = Math.exp(-d * 8); return [Math.sin(d * 71) * amp * e, Math.cos(d * 53) * amp * 1.3 * e]; }
 function renderFrame(t) {
-  if (!T_LAND) setup();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
-  // tremor da tela no impacto
-  let sx = 0, sy = 0;
-  if (t >= T_LAND) { const d = t - T_LAND, e = Math.exp(-d * 7); sx = Math.sin(d * 71) * 13 * e; sy = Math.cos(d * 53) * 17 * e; }
-  ctx.translate(sx, sy);
-  ctx.drawImage(IMG.feed, 0, 0, W, H);
-
-  const h = house(t);
-  if (t >= T_DROP) {
-    // post de cima fica em branco: a casa saiu, o fundo some junto
+  const s1 = shakeAt(t, T_LAND, 5), s2 = shakeAt(t, T_SLAM, 13);
+  ctx.translate(s1[0] + s2[0], s1[1] + s2[1]);
+  drawFeed();
+  if (t >= T_SHAKE) {                             // a casa vira um objeto solto
     ctx.fillStyle = '#fff'; ctx.fillRect(0, TOP.y0, W, TOP.y1 - TOP.y0);
-    const f = 1 - range(t, T_DROP, T_DROP + 0.45);
-    if (f > 0) { ctx.globalAlpha = f; ctx.drawImage(IMG.fundo, 0, 0, W, TOP.y1); ctx.globalAlpha = 1; }
-  } else if (t >= T_SHAKE) {
-    // tremendo: redesenha a casa por cima do lugar original
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, TOP.y0, W, TOP.y1 - TOP.y0);
-    ctx.drawImage(IMG.fundo, 0, 0, W, TOP.y1);
+    const f = 1 - range(t, T_DROP, T_DROP + 0.45);  // fundo do post some: post fica em branco
+    if (f > 0) { ctx.globalAlpha = f; ctx.drawImage(IMG.fundo, 0, TOP.y0, W, TOP.y1 - TOP.y0); ctx.globalAlpha = 1; }
   }
-  drawShadow(h, t);
+  drawShadow(t);
+  const h = house(t);
   if (t >= T_SHAKE) {
-    if (h.phase === 1) {                         // rastro leve de movimento
-      for (let k = 3; k >= 1; k--) { const q = house(t - k * 0.012); if (q.phase === 1) drawHouse(q, 0.12); }
-    }
+    if (h.ph === 1) for (let k = 2; k >= 1; k--) { const q = house(t - k * 0.014); if (q.ph === 1) drawHouse(q, 0.1); }
     drawHouse(h);
   }
+  drawBits(t);
   drawGrassOverlap(t);
-  drawImpact(t);
-
-  const hk = range(t, T_LAND + 1.3, T_LAND + 2.5);
-  if (hk > 0 && hk < 1) {
-    const s = hk < .25 ? easeOut(hk / .25) * 1.15 : hk < .35 ? lerp(1.15, 1, (hk - .25) / .1) : 1;
-    ctx.save(); ctx.globalAlpha = 1 - range(hk, .72, 1); ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 30;
-    heart(540, 1560, 7.5 * s, '#ffffff'); ctx.restore();
-  }
+  drawDust(t);
 }
 window.renderFrame = renderFrame;
+window.DUR = DUR; window.T_LAND = T_LAND; window.T_SLAM = T_SLAM;
 
 if (!/render=1/.test(location.search)) {
   window.READY.then(() => {
-    setup(); const st = performance.now();
+    const st = performance.now();
     const loop = now => { renderFrame(((now - st) / 1000) % (DUR + .5)); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
   });

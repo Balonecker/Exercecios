@@ -10,7 +10,7 @@ const fs = require('fs'), path = require('path');
   await p.goto('file://' + path.resolve(__dirname, 'index.html') + '?render=1');
   await p.evaluate(() => window.READY);
   await p.evaluate(() => renderFrame(0));
-  const info = await p.evaluate(() => ({ dur: window.DUR, land: window.T_LAND }));
+  const info = await p.evaluate(() => ({ dur: window.DUR, land: window.T_LAND, slam: window.T_SLAM }));
   fs.writeFileSync(path.join(out, 'hits.json'), JSON.stringify(info));
   const canvas = await p.$('canvas');
   const n = Math.round(info.dur * fps);

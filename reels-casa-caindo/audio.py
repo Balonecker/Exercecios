@@ -3,8 +3,8 @@ import json, sys, wave
 import numpy as np
 SR = 44100
 info = json.load(open(sys.argv[1])); out = sys.argv[2]
-dur, land = info["dur"], info["land"]
-shake, drop = 1.2, 2.05
+dur, land, slam = info["dur"], info["land"], info["slam"]
+shake, drop = 1.2, 2.1
 n = int(SR * dur); t = np.arange(n) / SR
 rng = np.random.default_rng(7)
 def lowpass(x, k): return np.convolve(x, np.ones(k) / k, mode="same")
@@ -18,8 +18,11 @@ mix += np.sin(2 * np.pi * (180 + 40 * np.sin(2 * np.pi * 3 * t)) * t) * env * 0.
 m = (t >= drop) & (t < land)
 u = np.clip((t - drop) / (land - drop), 0, 1)
 mix += lowpass(rng.standard_normal(n), 12) * (u ** 1.5) * m * 0.35
-# impacto: grave forte + estalo + detritos
-i = int(land * SR); L = n - i; tt = np.arange(L) / SR
+# 1º toque (canto): batida mais curta
+i0 = int(land * SR); L0 = n - i0; t0 = np.arange(L0) / SR
+mix[i0:] += np.sin(2 * np.pi * 70 * t0) * np.exp(-t0 * 14) * 0.45 + rng.standard_normal(L0) * np.exp(-t0 * 40) * 0.3
+# impacto principal: grave forte + estalo + detritos
+i = int(slam * SR); L = n - i; tt = np.arange(L) / SR
 boom = np.sin(2 * np.pi * 48 * tt * (1 - 0.25 * tt)) * np.exp(-tt * 4.5) * 1.0
 boom += np.sin(2 * np.pi * 95 * tt) * np.exp(-tt * 9) * 0.5
 crack = rng.standard_normal(L) * np.exp(-tt * 28) * 0.6
